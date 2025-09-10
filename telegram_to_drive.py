@@ -14,17 +14,13 @@ channel_username = os.getenv("TELEGRAM_CHANNEL")
 gdrive_folder_id = os.getenv("GOOGLE_FOLDER")  
 log_file = "uploaded_log.txt"
 
-# المصادقة على Google Drive
-gauth = GoogleAuth()
-gauth.LoadCredentialsFile("mycreds.txt")
-if gauth.credentials is None:
-    gauth.LocalWebserverAuth()
-elif gauth.access_token_expired:
-    gauth.Refresh()
-else:
-    gauth.Authorize()
-gauth.SaveCredentialsFile("mycreds.txt")
-drive = GoogleDrive(gauth)
+# بيانات OAuth
+CLIENT_ID = "553805965519-1gvas0tmcl86v76k7m9bhkmc7m76657s.apps.googleusercontent.com"
+CLIENT_SECRET = "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"
+REFRESH_TOKEN = "1//09SLS4A1oZYsJCgYIARAAGAkSNwF-L9IrQJneNmOVOAjihJWVMGFL2gYlLAdg0Y_0SZg4bQPjbRR-qkDKYvbSS4weE7zrPh8w4_E"
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+FOLDER_ID = "1oGaDAOI-_QYIUb_om8HDq-JkMuuiTIj_"
 
 # تحميل سجل الملفات السابقة
 if os.path.exists(log_file):
