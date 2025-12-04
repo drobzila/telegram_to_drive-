@@ -152,9 +152,10 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🚀 البوت جاهز للعمل مع Webhook!")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+   app.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=TOKEN,
+    webhook_url=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
+)
+
