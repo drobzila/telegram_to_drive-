@@ -1,8 +1,8 @@
 import os
 import json
 import random
-import asyncio
 from pathlib import Path
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from google.oauth2.credentials import Credentials
@@ -17,25 +17,23 @@ PORT = int(os.environ.get("PORT", "8443"))
 if not TOKEN or not WEBHOOK_URL:
     raise Exception("⚠️ يجب تعيين TELEGRAM_TOKEN وWEBHOOK_URL في Environment Variables")
 
-# مجلدات
+# مجلدات مؤقتة ومخرجات
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
 TEMP_DIR = Path("temp")
 TEMP_DIR.mkdir(exist_ok=True)
 
-# مجلد Google Drive الرئيسي
-MAIN_FOLDER_ID = "1lLKbFPovufWeEkwpCgI3cM-Je-Uee9el"
+# -------- Google Drive ----------
+USER_DB = Path("user_folders.json")
 
-RESPONSES = ["السلام عليكم يا {name} 🌸", "أهلًا وسهلًا يا {name} 👋"]
-
-# ---------- دوال Google Drive ----------
 def get_drive_service():
     if not os.path.exists("token.json"):
         raise Exception("⚠️ لم يتم العثور على token.json")
-    creds = Credentials.from_authorized_user_file("token.json", ["https://www.googleapis.com/auth/drive"])
+    creds = Credentials.from_authorized_user_file(
+        "token.json",
+        ["https://www.googleapis.com/auth/drive.file"]
+    )
     return build("drive", "v3", credentials=creds)
-
-USER_DB = Path("user_folders.json")
 
 def load_user_db():
     if USER_DB.exists():
@@ -74,20 +72,70 @@ def list_drive_videos(service, folder_id):
     results = service.files().list(q=query, fields="files(id, name)").execute()
     return results.get("files", [])
 
-# ---------- دوال البوت ----------
+# -------- الوقت و الترحيب --------
+def get_time_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "☀️ صباح الخير"
+    elif 12 <= hour < 16:
+        return "🌤️ ظهر سعيد"
+    elif 16 <= hour < 20:
+        return "🌇 مساء الخير"
+    else:
+        return "🌙 ليلة سعيدة"
+
+WELCOME_IMAGES = [
+    "https://i.imgur.com/Asl8WjD.jpeg",
+    "https://i.imgur.com/SuU7hVg.jpeg",
+    "https://i.imgur.com/FSzn4tF.jpeg"
+]
+
+WELCOME_GIFS = [
+    "https://i.imgur.com/4M7IWwP.gif",
+    "https://i.imgur.com/TcJH4kf.gif"
+]
+
+BRAND_INTRO_VIDEOS = [
+    "https://cdn.pixabay.com/vimeo/456438756/blue-tech-waves-19058.mp4",
+    "https://cdn.pixabay.com/vimeo/300842798/blue-particles-motion-background-9747.mp4",
+    "https://cdn.pixabay.com/vimeo/437927518/hi-tech-blue-grid-18502.mp4"
+]
+
+BOT_LOGO = "https://i.imgur.com/tgFRxU8.png"
+
+BRAND_TEMPLATE = """
+<b>🎉 مرحبًا بك يا {name}!</b>
+
+<b>🚀 {bot_name}</b>
+نظام إدارة ملفات متكامل يعمل بالذكاء الاصطناعي
+ويتيح لك رفع ملفاتك وتنظيمها داخل Google Drive بكل سهولة وأمان.
+
+<b>✨ مميزات البوت:</b>
+• رفع مباشر إلى Google Drive  
+• نسخ ونقل الملفات بسهولة  
+• إنشاء مجلد لكل مستخدم  
+• دعم الفيديوهات والصور والملفات  
+• سرعة وأداء عالي  
+
+<b>👇 اختر من القائمة للبدء:</b>
+"""
+
+def branded_buttons():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📁 ملفاتي", callback_data="open_folder")],
+        [InlineKeyboardButton("📤 رفع ملف", callback_data="upload_help")],
+        [InlineKeyboardButton("🧭 القائمة الرئيسية", callback_data="main_menu")],
+        [InlineKeyboardButton("ℹ️ المساعدة", callback_data="help_menu")]
+    ])
+
+# -------- دوال البوت ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(f"مرحبًا يا {user.first_name}! اكتب /help لرؤية الأوامر.")
+    await greet(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/start - بدء\n/help - المساعدة\n/myfolder - إنشاء مجلد\n/listvideos - عرض الفيديوهات\n/choosevideo - نسخ فيديو"
     )
-
-async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    response = random.choice(RESPONSES).format(name=user.first_name or "User")
-    await update.message.reply_text(response)
 
 async def myfolder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = get_drive_service()
@@ -110,34 +158,76 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_videos_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = get_drive_service()
-    videos = list_drive_videos(service, MAIN_FOLDER_ID)
+    user = update.effective_user
+    folder_id = get_or_create_user_folder(service, user)
+    videos = list_drive_videos(service, folder_id)
+
     if not videos:
-        await update.message.reply_text("❌ لا يوجد فيديوهات في المجلد الرئيسي!")
+        await update.message.reply_text("📭 مجلدك فارغ! قم برفع فيديو أولاً.")
         return
-    msg = f"📽 عدد الفيديوهات: {len(videos)}\n" + "\n".join([f"{i+1}. {v['name']}" for i, v in enumerate(videos)])
+
+    msg = "🎞 فيديوهاتك:\n" + "\n".join([f"{i+1}. {v['name']}" for i, v in enumerate(videos)])
     await update.message.reply_text(msg)
 
 async def choose_video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = get_drive_service()
-    videos = list_drive_videos(service, MAIN_FOLDER_ID)
+    user = update.effective_user
+    folder_id = get_or_create_user_folder(service, user)
+    videos = list_drive_videos(service, folder_id)
+
     if not videos:
-        await update.message.reply_text("❌ لا يوجد أي فيديوهات للاختيار!")
+        await update.message.reply_text("❌ لا يوجد فيديوهات في مجلدك!")
         return
+
     keyboard = [[InlineKeyboardButton(v['name'], callback_data=v['id'])] for v in videos]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("اختر الفيديو لنسخه:", reply_markup=reply_markup)
+    await update.message.reply_text("اختر فيديو:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    video_id = query.data
-    user = query.from_user
-    service = get_drive_service()
-    user_folder_id = get_or_create_user_folder(service, user)
-    service.files().copy(fileId=video_id, body={"parents": [user_folder_id]}).execute()
-    await query.edit_message_text("✔ تم نسخ الفيديو!")
 
-# ---------- تشغيل البوت عبر Webhook ----------
+    if query.data == "open_folder":
+        await query.edit_message_text("📁 جاري فتح مجلدك…")
+    elif query.data == "upload_help":
+        await query.edit_message_text("📤 أرسل أي ملف الآن لرفعه!")
+    elif query.data == "help_menu":
+        await query.edit_message_text(
+            "ℹ️ قائمة المساعدة:\n/start\n/help\n/myfolder\n/listvideos\n/choosevideo"
+        )
+    else:
+        # نسخ الفيديو إذا تم اختيار ID
+        video_id = query.data
+        user = query.from_user
+        service = get_drive_service()
+        user_folder_id = get_or_create_user_folder(service, user)
+        service.files().copy(fileId=video_id, body={"parents": [user_folder_id]}).execute()
+        await query.edit_message_text("✔ تم نسخ الفيديو!")
+
+# -------- الترحيب الاحترافي الكامل --------
+async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    name = user.first_name or "صديقي"
+    bot_name = "CloudDrive Bot"   # غيّره لاسم بوتك
+
+    caption = BRAND_TEMPLATE.format(
+        name=name,
+        bot_name=bot_name
+    )
+
+    # أرسل شعار أولًا
+    await update.message.reply_photo(BOT_LOGO)
+
+    # إرسال فيديو الهوية مع الأزرار
+    video = random.choice(BRAND_INTRO_VIDEOS)
+    await update.message.reply_video(
+        video=video,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=branded_buttons(),
+        supports_streaming=True
+    )
+
+# -------- تشغيل البوت عبر Webhook ----------
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -158,4 +248,3 @@ if __name__ == "__main__":
         url_path=TOKEN,
         webhook_url=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
     )
-
