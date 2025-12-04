@@ -207,25 +207,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = user.first_name or "صديقي"
-    bot_name = "CloudDrive Bot"   # غيّره لاسم بوتك
+    bot_name = "CloudDrive Bot"  # غيّره لاسم بوتك
 
     caption = BRAND_TEMPLATE.format(
         name=name,
         bot_name=bot_name
     )
 
-    # أرسل شعار أولًا
-    await update.message.reply_photo(BOT_LOGO)
-
-    # إرسال فيديو الهوية مع الأزرار
-    video = random.choice(BRAND_INTRO_VIDEOS)
-    await update.message.reply_video(
-        video=video,
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=branded_buttons(),
-        supports_streaming=True
-    )
+    # حاول إرسال الفيديو أولًا
+    video_path = TEMP_DIR / "intro.mp4"  # ضع الفيديو الترحيبي هنا
+    try:
+        if video_path.exists():
+            with open(video_path, "rb") as f:
+                await update.message.reply_video(
+                    video=f,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=branded_buttons(),
+                    supports_streaming=True
+                )
+        else:
+            raise FileNotFoundError("ملف الفيديو غير موجود، سيتم استخدام GIF/صورة")
+    except Exception as e:
+        print(f"Video failed: {e}\nFallback to GIF/image")
+        # اختر GIF أو صورة عشوائية
+        media = random.choice(WELCOME_IMAGES + WELCOME_GIFS)
+        await update.message.reply_animation(
+            animation=media,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=branded_buttons()
+        )
 
 # -------- تشغيل البوت عبر Webhook ----------
 if __name__ == "__main__":
@@ -248,3 +260,4 @@ if __name__ == "__main__":
         url_path=TOKEN,
         webhook_url=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
     )
+
