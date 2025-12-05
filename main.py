@@ -14,8 +14,10 @@ from telegram.ext import (
 # ==========================
 # الإعدادات
 # ==========================
-TOKEN = "PUT-YOUR-TELEGRAM-TOKEN-HERE"
-
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+PORT = int(os.environ.get("PORT", "8443"))
+if not TOKEN or not WEBHOOK_URL: raise Exception("⚠️ يجب تعيين TELEGRAM_TOKEN وWEBHOOK_URL")
 
 # ==========================
 # رسالة الترحيب الرئيسية
@@ -119,3 +121,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
