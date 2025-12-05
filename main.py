@@ -472,18 +472,25 @@ async def list_videos_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text)
 
 # أمر ربط يوتيوب (OAuth للمستخدم)
-async def auth_youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+async def auth_youtube(update, context):
     try:
-        path = run_youtube_oauth_and_save(user.id)
-        await update.message.reply_text(f"✔ تم حفظ توكن يوتيوب للمستخدم. الملف: {path}")
+        flow = InstalledAppFlow.from_client_secrets_file(
+            "client_secrets_youtube.json",
+            scopes=["https://www.googleapis.com/auth/youtube.upload"]
+        )
+
+        auth_url, _ = flow.authorization_url(prompt="consent")
+
+        await update.message.reply_text(
+            "🔗 افتح الرابط التالي لتسجيل الدخول إلى YouTube:\n\n" + auth_url +
+            "\n\nبعد تسجيل الدخول ستظهر لك كود، أرسله لي هنا."
+        )
+
+        context.user_data["awaiting_youtube_code"] = flow
+
     except Exception as e:
-        await update.message.reply_text("❌ فشل إعداد OAuth لليوتيوب: " + str(e))
-
-# أمر رفع شامل (لو رغبت؛ هنا نوجه المستخدم لاستخدام الأزرار — نطبّق رسالة إرشادية)
-async def upload_to_youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ استخدم زر '🔄 تحديث مجلدي' ثم اختر الفيديو الذي تريد رفعه عبر الأزرار (نصف تلقائي).")
-
+        await update.message.reply_text("❌ خطأ OAuth: " + str(e))
+        
 # ==========================
 # تسجيل وبدء البوت
 # ==========================
@@ -516,3 +523,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
