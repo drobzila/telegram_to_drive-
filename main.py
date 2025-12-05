@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -17,7 +18,14 @@ from telegram.ext import (
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", "8443"))
-if not TOKEN or not WEBHOOK_URL: raise Exception("⚠️ يجب تعيين TELEGRAM_TOKEN وWEBHOOK_URL")
+
+if not TOKEN or not WEBHOOK_URL:
+    raise Exception("⚠️ يجب تعيين TELEGRAM_TOKEN وWEBHOOK_URL")
+
+# مسار ملفات مؤقتة (مطلوب للبوت حتى لو لم نستخدمه الآن)
+TEMP_DIR = Path("temp")
+TEMP_DIR.mkdir(exist_ok=True)
+
 
 # ==========================
 # رسالة الترحيب الرئيسية
@@ -34,7 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• تنظيم احترافي للملفات\n"
         "• إنشاء مجلد خاص لكل مستخدم\n"
         "• سرعة – دقة – أمان\n\n"
-        "اختر من القائمة للبدء 👇"
+        "👇 اختر من القائمة للبدء:"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -46,15 +54,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-# الأزرار
+# معالجة الأزرار
 # ==========================
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # ==========================
     # زر حول البوت
-    # ==========================
     if q.data == "about":
         await q.edit_message_text(
             "ℹ️ <b>حول البوت</b>\n\n"
@@ -70,9 +76,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
-    # ==========================
     # زر الدعم
-    # ==========================
     elif q.data == "support":
         await q.edit_message_text(
             "📩 <b>الدعم والمساعدة</b>\n\n"
@@ -89,9 +93,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
-    # ==========================
-    # زر الرجوع للقائمة الرئيسية
-    # ==========================
+    # زر الرجوع
     elif q.data == "back":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("ℹ️ حول البوت", callback_data="about")],
@@ -107,7 +109,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-# تشغيل البوت
+# تشغيل البوت باستخدام Webhook
 # ==========================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -115,10 +117,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
-    print("🚀 Bot is running...")
-    app.run_polling()
+    print("🚀 Bot is running with Webhook...")
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
+    )
 
 
 if __name__ == "__main__":
     main()
-
