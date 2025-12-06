@@ -174,6 +174,60 @@ async def list_videos_command(update, context):
     text = "📽 الفيديوهات المتاحة:\n" + "\n".join([f"{i+1}. {v['name']}" for i, v in enumerate(videos)])
     await update.message.reply_text(text)
 
+# زر رفع فيديو محدد إلى يوتيوب (نصف تلقائي)
+async def upload_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    if not data.startswith("upload:"):
+        return
+    file_id = data.split(":", 1)[1]
+    service = get_drive_service()
+    user = query.from_user
+
+    # تأكد أن لدى المستخدم توكن لليوتيوب
+    creds = get_youtube_credentials_for_user(user.id)
+    if not creds:
+        await query.edit_message_text("⚠️ لم تقم بربط حساب YouTube بعد. شغّل /auth_youtube ثم حاول مجددًا.")
+        return
+
+    # جلب معلومات الملف من Drive
+    try:
+        fmeta = service.files().get(fileId=file_id, fields="id,name,mimeType,appProperties").execute()
+    except Exception as e:
+        await query.edit_message_text("❌ خطأ في الحصول على معلومات الملف من Drive: " + str(e))
+        return
+
+    if not fmeta.get("mimeType", "").startswith("video/"):
+        await query.edit_message_text("⚠️ هذا الملف ليس فيديو.")
+        return
+
+    await query.edit_message_text(f"⬇️ جارٍ تنزيل {fmeta['name']} ثم رفعه إلى قناتك على YouTube...")
+
+    # تنزيل مؤقت
+    try:
+        temp_path = download_drive_file_to_temp(service, file_id, fmeta["name"])
+    except Exception as e:
+        await query.edit_message_text("❌ فشل تنزيل الملف من Drive: " + str(e))
+        return
+
+    # وصف الفيديو الافتراضي
+    description = "أفضل صانع وناشر للقرآن الكريم — جودة عالية، سهولة، سرعة. Qurani Studio."
+
+    # رفع الفيديو
+    try:
+        yt_id = upload_single_file_to_youtube(creds, temp_path, title=fmeta["name"], description=description, privacy="private")
+        # تعليم ملف Drive أنه مرفوع (appProperties)
+        service.files().update(fileId=file_id, body={"appProperties": {"uploaded_to_youtube": "true"}}).execute()
+        await query.edit_message_text(f"✅ تم رفع الفيديو بنجاح إلى قناتك! (YouTube ID: {yt_id})\nرابط: https://youtu.be/{yt_id}")
+    except Exception as e:
+        await query.edit_message_text("❌ فشل الرفع إلى يوتيوب: " + str(e))
+    finally:
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+
 
 # ==========================
 # Telegram Handlers
@@ -321,4 +375,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
