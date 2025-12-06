@@ -57,9 +57,9 @@ async def auth_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flow = Flow.from_client_secrets_file(
             "client_secrets_youtube.json",
             scopes=YOUTUBE_SCOPES,
-            redirect_uri=f"{WEBHOOK_URL}/oauth2callback"
-        )
-        auth_url, _ = flow.authorization_url(access_type='offline', prompt='consent')
+    redirect_uri="https://telegram-to-drive.onrender.com/oauth2callback"
+)
+auth_url, _ = flow.authorization_url(prompt="consent")
         context.user_data["flow"] = flow  # نخزن flow مؤقتاً
         await update.message.reply_text(
             f"🔗 افتح الرابط التالي على جهازك وسجل الدخول إلى YouTube:\n\n{auth_url}\n\n"
@@ -190,3 +190,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
