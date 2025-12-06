@@ -116,21 +116,22 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Use OOB to make user copy-paste code (no redirect endpoint required)
-        flow = Flow.from_client_secrets_file(
-            CLIENT_SECRETS,
-            scopes=SCOPES,
-            redirect_uri=f"{WEBHOOK_URL}/oauth2callback"
-        )
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-        # store flow in user_data (keeps client secrets in memory briefly)
-        context.user_data["flow"] = flow
-        await update.message.reply_text(
-            "🔐 اضغط الرابط التالي لربط حساب Google الخاص بك (Drive + YouTube):\n\n"
-            f"{auth_url}\n\n"
-            "بعد تسجيل الدخول انسخ الكود الظاهر والصقه هنا في رسالة للبوت."
-        )
-    except Exception as e:
-        await update.message.reply_text("❌ فشل بدء عملية الربط: " + str(e))
+       flow = Flow.from_client_secrets_file(
+    CLIENT_SECRETS,
+    scopes=SCOPES,
+    redirect_uri=f"{WEBHOOK_URL}/oauth2callback"  # يجب أن يكون مطابقًا تمامًا للـ URI في Google Cloud
+)
+auth_url, _ = flow.authorization_url(
+    prompt="consent",
+    access_type="offline",
+    include_granted_scopes="true"
+)
+context.user_data["flow"] = flow
+await update.message.reply_text(
+    "🔐 اضغط الرابط التالي لربط حساب Google الخاص بك (Drive + YouTube):\n\n"
+    f"{auth_url}\n\n"
+    "بعد تسجيل الدخول انسخ الكود الظاهر والصقه هنا في رسالة للبوت."
+)
 
 async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive the pasted OAuth code and exchange for credentials."""
@@ -466,4 +467,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
