@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Unified Telegram bot:
+Unified Telegram Bot:
 - per-user OAuth (Drive + YouTube)
 - personal Drive folder per user (inside MAIN_FOLDER_ID)
-- list user's Drive files, choose a file and upload it to the user's YouTube channel
-Usage:
-- /auth -> gives OAuth URL (copy code and send back)
-- /mydrive -> shows folder link and list files (with buttons)
-- choose a file -> upload to YouTube (confirmation)
+- list user's Drive files, choose a file and upload it to YouTube
+- main folder with Quran videos that can be synced to user folders
+- upload files from Telegram messages to user's Drive
 """
 
 import os
 import json
+import random
 import tempfile
 import io
 from pathlib import Path
 from typing import Optional
 
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
@@ -30,48 +27,45 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-from google_auth_oauthlib.flow import Flow
+from google_auth_oauthlib.flow import Flow, InstalledAppFlow
 
-# ----------------------
+# ==========================
 # Config / ENV
-# ----------------------
+# ==========================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = "https://telegram-to-drive.onrender.com"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-to-drive.onrender.com")
 PORT = int(os.environ.get("PORT", "8443"))
+MAIN_FOLDER_ID = os.environ.get("MAIN_FOLDER_ID", "root")  # Google Drive folder ID for Quran videos
+CLIENT_SECRETS = "client_secrets_youtube.json"
 
 if not TOKEN:
-    raise Exception("⚠️ يجب تعيين TELEGRAM_TOKEN في Environment Variables")
+    raise Exception("⚠️ TELEGRAM_TOKEN غير مضبوط في Environment Variables")
 
-# Local folders / files
+# Local directories
 DATA_DIR = Path(".")
 TEMP_DIR = DATA_DIR / "temp"
-TOKENS_DIR = DATA_DIR / "user_tokens"    # per-user token files: user_tokens/{user_id}.json
-USER_DB = DATA_DIR / "user_folders.json"  # map user_id -> folder_id
-
+TOKENS_DIR = DATA_DIR / "user_tokens"
+USER_DB = DATA_DIR / "user_folders.json"
 TEMP_DIR.mkdir(exist_ok=True)
 TOKENS_DIR.mkdir(exist_ok=True)
 if not USER_DB.exists():
     USER_DB.write_text(json.dumps({}), encoding="utf-8")
 
-# Google Drive main folder where personal folders will be created
-MAIN_FOLDER_ID = os.environ.get("MAIN_FOLDER_ID", "root")  # set to your folder id (e.g. "1lLK...") or "root"
-
-# Combined scopes (Drive + YouTube)
+# OAuth scopes
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/youtube.upload",
 ]
 
-# Client secrets file (download from Google Cloud Console)
-CLIENT_SECRETS = "client_secrets_youtube.json"
-if not Path(CLIENT_SECRETS).exists():
-    # We don't raise here, because user might add it later; but warn in logs when needed.
-    pass
+# Misc
+RESPONSES = ["السلام عليكم يا {name} 🌸", "أهلًا وسهلًا يا {name} 👋"]
+ABOUT_DESCRIPTION = "أفضل صانع وناشر للقرآن الكريم — جودة عالية، سهولة، سرعة."
+SUPPORT_CHANNEL_URL = "https://www.youtube.com/channel/UCHYJMygtSl60pThu6AUgeOw"
 
-# ----------------------
-# Utilities: user data
-# ----------------------
+# ==========================
+# User DB helpers
+# ==========================
 def load_user_db():
     return json.loads(USER_DB.read_text(encoding="utf-8"))
 
@@ -79,8 +73,7 @@ def save_user_db(db):
     USER_DB.write_text(json.dumps(db, indent=2, ensure_ascii=False), encoding="utf-8")
 
 def get_user_folder_id(user_id: int) -> Optional[str]:
-    db = load_user_db()
-    return db.get(str(user_id))
+    return load_user_db().get(str(user_id))
 
 def set_user_folder_id(user_id: int, folder_id: str):
     db = load_user_db()
@@ -90,15 +83,11 @@ def set_user_folder_id(user_id: int, folder_id: str):
 def token_path_for_user(user_id: int) -> Path:
     return TOKENS_DIR / f"{user_id}_token.json"
 
-# ----------------------
-# OAuth helpers (per-user)
-# ----------------------
 def credentials_for_user(user_id: int) -> Optional[Credentials]:
     token_path = token_path_for_user(user_id)
     if not token_path.exists():
         return None
     creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-    # refresh if needed
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -107,69 +96,10 @@ def credentials_for_user(user_id: int) -> Optional[Credentials]:
             return None
     return creds
 
-async def auth_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        # إنشاء Flow من ملف client_secrets
-        flow = Flow.from_client_secrets_file(
-            CLIENT_SECRETS,
-            scopes=SCOPES,
-            redirect_uri="https://telegram-to-drive.onrender.com/oauth2callback"
-        )
-
-        # توليد رابط المصادقة
-        auth_url, _ = flow.authorization_url(
-            prompt="consent",
-            access_type="offline",
-            include_granted_scopes="true"
-        )
-
-        # حفظ الـ Flow مؤقتًا في user_data ليتعرف عليه عند استقبال الكود
-        context.user_data["flow"] = flow
-
-        # إرسال الرابط للمستخدم
-        await update.message.reply_text(
-            f"🔗 افتح الرابط التالي وسجّل الدخول إلى حساب Google الخاص بك:\n\n{auth_url}\n\n"
-            "بعد تسجيل الدخول، انسخ الكود الذي يظهر لك وأرسله هنا."
-        )
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ أثناء إنشاء رابط OAuth: {e}")
-
-async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive the pasted OAuth code and exchange for credentials."""
-    user = update.effective_user
-    if "flow" not in context.user_data:
-        # not in OAuth process
-        return
-    code = update.message.text.strip()
-    flow: Flow = context.user_data["flow"]
-    try:
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        token_path = token_path_for_user(user.id)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        context.user_data.pop("flow", None)
-        # After successful auth, create user's personal folder (if not exists)
-        try:
-            service = build("drive", "v3", credentials=creds)
-            folder_id = get_user_folder_id(user.id)
-            if not folder_id:
-                folder_id = create_personal_folder(service, user)
-                set_user_folder_id(user.id, folder_id)
-        except Exception:
-            # Not fatal: user can still use /mydrive which will create folder later
-            pass
-
-        await update.message.reply_text("✅ تم ربط حساب Google بنجاح. يمكنك الآن استخدام أوامر Drive + YouTube.")
-    except Exception as e:
-        await update.message.reply_text("❌ رمز OAuth غير صالح أو فشل تبادل التوكن: " + str(e))
-        context.user_data.pop("flow", None)
-
-# ----------------------
-# Drive helpers (per-user)
-# ----------------------
+# ==========================
+# Google Drive helpers
+# ==========================
 def create_personal_folder(service, user) -> str:
-    """Create a folder named <first>_<id> inside MAIN_FOLDER_ID and return id."""
     folder_name = f"{(user.first_name or 'user')}_{user.id}"
     body = {
         "name": folder_name,
@@ -180,16 +110,13 @@ def create_personal_folder(service, user) -> str:
     return folder["id"]
 
 def ensure_user_folder(creds: Credentials, user) -> str:
-    """Return folder id; create if missing."""
     folder_id = get_user_folder_id(user.id)
     service = build("drive", "v3", credentials=creds)
     if folder_id:
-        # verify exists
         try:
             service.files().get(fileId=folder_id, fields="id").execute()
             return folder_id
         except Exception:
-            # fallthrough to create
             pass
     folder_id = create_personal_folder(service, user)
     set_user_folder_id(user.id, folder_id)
@@ -202,202 +129,133 @@ def list_files_in_folder_with_types(service, folder_id, mime_prefix=None):
     res = service.files().list(q=q, fields="files(id, name, mimeType)", pageSize=500).execute()
     return res.get("files", [])
 
-# ----------------------
-# Commands / UI
-# ----------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🎉 أهلاً!\n\n"
-        "• /auth - ربط حساب Google (Drive + YouTube)\n"
-        "• /mydrive - عرض مجلدك الشخصي في Drive وقائمة الملفات\n"
-        "• /upload_to_youtube - ابدأ رفع ملف من مجلدك إلى YouTube\n"
-    )
-    await update.message.reply_text(text)
+def list_drive_videos(service, folder_id):
+    return list_files_in_folder_with_types(service, folder_id, mime_prefix="video")
 
-async def mydrive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    creds = credentials_for_user(user.id)
-    if not creds:
-        await update.message.reply_text("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
-        return
+def download_drive_file_to_temp(service_drive, file_id, filename):
+    suffix = Path(filename).suffix or ".mp4"
+    fd, temp_path = tempfile.mkstemp(prefix="dl_", suffix=suffix, dir=str(TEMP_DIR))
+    os.close(fd)
+    request = service_drive.files().get_media(fileId=file_id)
+    fh = io.FileIO(temp_path, mode="wb")
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
     try:
-        folder_id = ensure_user_folder(creds, user)
-        service = build("drive", "v3", credentials=creds)
-        files = list_files_in_folder_with_types(service, folder_id)
-        drive_link = f"https://drive.google.com/drive/folders/{folder_id}"
-        if not files:
-            text = f"📁 مجلدك الشخصي: <code>{folder_id}</code>\n\n🔗 <a href='{drive_link}'>فتح المجلد في Drive</a>\n\nلا توجد ملفات بعد."
-            await update.message.reply_html(text)
-            return
-        # build inline keyboard with file buttons (ids)
-        kb = []
-        for f in files:
-            kb.append([InlineKeyboardButton(f["name"], callback_data=f"selectfile:{f['id']}")])
-        kb.append([InlineKeyboardButton("🔙 إغلاق", callback_data="close")])
-        text = f"📁 مجلدك الشخصي: <code>{folder_id}</code>\n\n🔗 <a href='{drive_link}'>فتح المجلد في Drive</a>\n\nاختر ملفاً (اضغط الاسم):"
-        await update.message.reply_html(text, reply_markup=InlineKeyboardMarkup(kb), disable_web_page_preview=True)
-    except Exception as e:
-        await update.message.reply_text("❌ خطأ أثناء الوصول إلى Drive: " + str(e))
-
-async def upload_to_youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start the flow: ask user to pick file from their Drive (by listing)."""
-    user = update.effective_user
-    creds = credentials_for_user(user.id)
-    if not creds:
-        await update.message.reply_text("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
-        return
-    try:
-        folder_id = ensure_user_folder(creds, user)
-        service = build("drive", "v3", credentials=creds)
-        # list video mime types only
-        videos = list_files_in_folder_with_types(service, folder_id, mime_prefix="video")
-        if not videos:
-            await update.message.reply_text("❌ لا توجد فيديوهات في مجلدك الشخصي للرفع.")
-            return
-        kb = [[InlineKeyboardButton(v["name"], callback_data=f"uploadvideo:{v['id']}")] for v in videos]
-        kb.append([InlineKeyboardButton("🔙 إلغاء", callback_data="close")])
-        await update.message.reply_text("🎬 اختر الفيديو الذي تريد رفعه إلى YouTube:", reply_markup=InlineKeyboardMarkup(kb))
-    except Exception as e:
-        await update.message.reply_text("❌ خطأ أثناء جلب الفيديوهات: " + str(e))
-
-# ----------------------
-# Callback handlers
-# ----------------------
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    data = q.data or ""
-    if data == "close":
-        await q.message.delete()
-        return
-    if data.startswith("selectfile:"):
-        file_id = data.split(":", 1)[1]
-        await q.message.reply_text(f"✳ تم تحديد الملف (ID: {file_id}). استعمل /upload_to_youtube ثم اختر الملف لرفعه.")
-        return
-    if data.startswith("uploadvideo:"):
-        file_id = data.split(":", 1)[1]
-        await q.edit_message_text("⏳ جاري تجهيز الملف للرفع إلى YouTube. الرجاء الانتظار...")
-        await handle_drive_to_youtube(q.from_user.id, file_id, context, reply_target=q)
-        return
-
-# ----------------------
-# Core: download from Drive -> upload to YouTube
-# ----------------------
-async def handle_drive_to_youtube(user_id: int, drive_file_id: str, context: ContextTypes.DEFAULT_TYPE, reply_target=None):
-    """Download a Drive file and upload it to the user's YouTube channel."""
-    # reply_target can be either an Update.message or callback query object to send progress
-    # decide how to reply
-    async def send(text):
-        if reply_target is None:
-            # fallback to chat via user id
-            await context.bot.send_message(chat_id=user_id, text=text)
-        else:
-            # callback query object: reply_target is CallbackQuery
-            try:
-                await reply_target.message.reply_text(text)
-            except Exception:
-                try:
-                    await reply_target.edit_message_text(text)
-                except Exception:
-                    await context.bot.send_message(chat_id=user_id, text=text)
-
-    creds = credentials_for_user(user_id)
-    if not creds:
-        await send("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
-        return
-
-    # build Drive service
-    try:
-        drive_service = build("drive", "v3", credentials=creds)
-    except Exception as e:
-        await send("❌ خطأ بإنشاء خدمة Drive: " + str(e))
-        return
-
-    # get file metadata
-    try:
-        meta = drive_service.files().get(fileId=drive_file_id, fields="id,name,mimeType,size").execute()
-        file_name = meta.get("name") or f"{drive_file_id}"
-    except Exception as e:
-        await send("❌ تعذّر جلب معلومات الملف: " + str(e))
-        return
-
-    # download file to temp
-    tmp_file = TEMP_DIR / f"{user_id}_{drive_file_id}_{file_name}"
-    try:
-        request = drive_service.files().get_media(fileId=drive_file_id)
-        fh = io.FileIO(str(tmp_file), mode="wb")
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
         while not done:
             status, done = downloader.next_chunk()
-            # optional: could send progress
-        fh.close()
-    except Exception as e:
-        await send("❌ فشل تنزيل الملف من Drive: " + str(e))
-        try:
-            tmp_file.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return
-
-    # build YouTube service and upload
-    try:
-        youtube = build("youtube", "v3", credentials=creds)
-    except Exception as e:
-        await send("❌ فشل إنشاء خدمة YouTube: " + str(e))
-        tmp_file.unlink(missing_ok=True)
-        return
-
-    await send("⬆️ جاري رفع الملف إلى YouTube... (قد يستغرق وقتًا حسب حجم الملف)")
-
-    try:
-        media = MediaFileUpload(str(tmp_file), chunksize=-1, resumable=True)
-        body = {
-            "snippet": {
-                "title": file_name,
-                "description": f"Uploaded by Telegram bot for user {user_id}",
-                "tags": ["telegram", "drive", "upload"],
-                "categoryId": "22"
-            },
-            "status": {"privacyStatus": "private"}
-        }
-        req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-        response = None
-        while response is None:
-            status, response = req.next_chunk()
-            if status:
-                # status.progress() not always available; show approximate
-                pct = int(status.progress() * 100) if hasattr(status, "progress") and status.progress() is not None else None
-                if pct:
-                    try:
-                        await send(f"🔄 رفع {pct}% ...")
-                    except Exception:
-                        pass
-        video_id = response.get("id")
-        await send(f"✅ تم رفع الفيديو إلى YouTube بنجاح! https://youtu.be/{video_id}")
-    except Exception as e:
-        await send("❌ حدث خطأ أثناء رفع الفيديو إلى YouTube: " + str(e))
     finally:
+        fh.close()
+    return temp_path
+
+def sync_user_folder(service, user, main_folder_id):
+    user_folder_id = ensure_user_folder(credentials_for_user(user.id), user)
+    main_videos = list_drive_videos(service, main_folder_id)
+    user_videos = list_drive_videos(service, user_folder_id)
+    user_names = {f["name"] for f in user_videos}
+    to_copy = [v for v in main_videos if v["name"] not in user_names]
+    copied = []
+    for v in to_copy:
         try:
-            tmp_file.unlink(missing_ok=True)
-        except Exception:
-            pass
+            copy_body = {"parents": [user_folder_id], "name": v["name"]}
+            new_file = service.files().copy(fileId=v["id"], body=copy_body, fields="id, name").execute()
+            copied.append({"id": new_file["id"], "name": new_file["name"]})
+        except Exception as e:
+            copied.append({"id": None, "name": v["name"], "error": str(e)})
+    return copied
+
+# ==========================
+# YouTube helpers
+# ==========================
+def upload_single_file_to_youtube(creds, local_path, title, description, privacy="private"):
+    youtube = build("youtube", "v3", credentials=creds)
+    body = {
+        "snippet": {"title": title, "description": description, "tags": ["quran", "قرآن"], "categoryId": "22"},
+        "status": {"privacyStatus": privacy}
+    }
+    media = MediaFileUpload(local_path, chunksize=-1, resumable=True)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+    return response.get("id")
+
+# ==========================
+# Telegram Handlers
+# ==========================
+def main_menu_keyboard():
+    kb = [
+        [InlineKeyboardButton("📂 إدارة الملفات", callback_data="ui:myfiles")],
+        [InlineKeyboardButton("📤 رفع ملف إلى Drive", callback_data="ui:upload")],
+        [InlineKeyboardButton("🎬 نسخ فيديو إلى ملفاتي", callback_data="ui:choosevideo")],
+        [InlineKeyboardButton("🔄 تحديث مجلدي", callback_data="ui:sync")],
+        [InlineKeyboardButton("ℹ️ حول البوت", callback_data="ui:about"),
+         InlineKeyboardButton("🛠 الدعم الفني", callback_data="ui:support")]
+    ]
+    return InlineKeyboardMarkup(kb)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    name = user.first_name or "ضيف"
+    welcome_text = (
+        f"🎉 مرحبًا بك يا <b>{name}</b>!\n\n"
+        f"🚀 <b>CloudDrive Bot</b>\n{ABOUT_DESCRIPTION}\n\n"
+        "👇 استخدم الأزرار التالية للبدء:"
+    )
+    await update.message.reply_html(welcome_text, reply_markup=main_menu_keyboard())
+
+async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(random.choice(RESPONSES).format(name=user.first_name or "ضيف"))
 
 # ----------------------
-# Message handler for files (optional: allow uploading new files to user's Drive by sending them)
+# OAuth Handlers
+# ----------------------
+async def auth_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        flow = Flow.from_client_secrets_file(
+            CLIENT_SECRETS,
+            scopes=SCOPES,
+            redirect_uri=f"{WEBHOOK_URL}/oauth2callback"
+        )
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+        context.user_data["flow"] = flow
+        await update.message.reply_text(f"🔗 افتح الرابط لتسجيل الدخول:\n{auth_url}\n\nانسخ الكود وأرسله هنا.")
+    except Exception as e:
+        await update.message.reply_text("❌ خطأ OAuth: " + str(e))
+
+async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if "flow" not in context.user_data:
+        return
+    flow: Flow = context.user_data["flow"]
+    code = update.message.text.strip()
+    try:
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        token_path_for_user(user.id).write_text(creds.to_json(), encoding="utf-8")
+        context.user_data.pop("flow", None)
+        # create user folder
+        try:
+            service = build("drive", "v3", credentials=creds)
+            ensure_user_folder(creds, user)
+        except Exception:
+            pass
+        await update.message.reply_text("✅ تم ربط حساب Google بنجاح.")
+    except Exception as e:
+        await update.message.reply_text("❌ رمز OAuth غير صالح أو فشل التبادل: " + str(e))
+        context.user_data.pop("flow", None)
+
+# ----------------------
+# Upload file messages
 # ----------------------
 async def upload_file_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """If user sends a file (document/photo/video), upload it into their personal Drive folder."""
     user = update.effective_user
     creds = credentials_for_user(user.id)
     if not creds:
         await update.message.reply_text("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
         return
-
     service = build("drive", "v3", credentials=creds)
     folder_id = ensure_user_folder(creds, user)
-
-    # download the file locally
     local_path = None
     try:
         if update.message.document:
@@ -418,8 +276,6 @@ async def upload_file_message_handler(update: Update, context: ContextTypes.DEFA
         else:
             await update.message.reply_text("❌ أرسل ملفًا (مستند/صورة/فيديو).")
             return
-
-        # upload to Drive inside user's folder
         file_metadata = {"name": local_path.name, "parents": [folder_id]}
         media = MediaFileUpload(str(local_path))
         uploaded = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
@@ -434,28 +290,88 @@ async def upload_file_message_handler(update: Update, context: ContextTypes.DEFA
             pass
 
 # ----------------------
-# Main
+# List user's Drive files
 # ----------------------
+async def mydrive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    creds = credentials_for_user(user.id)
+    if not creds:
+        await update.message.reply_text("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
+        return
+    try:
+        folder_id = ensure_user_folder(creds, user)
+        service = build("drive", "v3", credentials=creds)
+        files = list_drive_videos(service, folder_id)
+        drive_link = f"https://drive.google.com/drive/folders/{folder_id}"
+        if not files:
+            await update.message.reply_html(f"📁 مجلدك: <code>{folder_id}</code>\n🔗 <a href='{drive_link}'>فتح المجلد</a>\nلا توجد ملفات بعد.")
+            return
+        kb = [[InlineKeyboardButton(f["name"], callback_data=f"uploadvideo:{f['id']}")] for f in files]
+        kb.append([InlineKeyboardButton("🔙 إلغاء", callback_data="close")])
+        await update.message.reply_html(f"📁 مجلدك: <code>{folder_id}</code>\n🔗 <a href='{drive_link}'>فتح المجلد</a>\nاختر ملفًا:", reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        await update.message.reply_text("❌ خطأ أثناء الوصول إلى Drive: " + str(e))
+
+# ----------------------
+# Upload selected file to YouTube
+# ----------------------
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    if data == "close":
+        await q.message.delete()
+        return
+    if data.startswith("uploadvideo:"):
+        file_id = data.split(":", 1)[1]
+        await q.edit_message_text("⏳ جاري تجهيز الملف للرفع إلى YouTube...")
+        await handle_drive_to_youtube(q.from_user.id, file_id, context, reply_target=q)
+        return
+
+async def handle_drive_to_youtube(user_id: int, drive_file_id: str, context: ContextTypes.DEFAULT_TYPE, reply_target=None):
+    async def send(text):
+        try:
+            await reply_target.message.reply_text(text)
+        except Exception:
+            try:
+                await reply_target.edit_message_text(text)
+            except Exception:
+                await context.bot.send_message(chat_id=user_id, text=text)
+    creds = credentials_for_user(user_id)
+    if not creds:
+        await send("⚠️ لم تربط حسابك بعد. استخدم /auth أولاً.")
+        return
+    drive_service = build("drive", "v3", credentials=creds)
+    meta = drive_service.files().get(fileId=drive_file_id, fields="id,name,mimeType,size").execute()
+    file_name = meta.get("name") or f"{drive_file_id}"
+    tmp_file = download_drive_file_to_temp(drive_service, drive_file_id, file_name)
+    youtube = build("youtube", "v3", credentials=creds)
+    await send("⬆️ جاري رفع الملف إلى YouTube...")
+    media = MediaFileUpload(str(tmp_file), chunksize=-1, resumable=True)
+    body = {"snippet":{"title":file_name,"description":f"Uploaded by Telegram bot for user {user_id}","tags":["telegram","drive","upload"],"categoryId":"22"},"status":{"privacyStatus":"private"}}
+    req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = None
+    while response is None:
+        status, response = req.next_chunk()
+    video_id = response.get("id")
+    await send(f"✅ تم رفع الفيديو إلى YouTube بنجاح! https://youtu.be/{video_id}")
+    try:
+        tmp_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+# ==========================
+# Main
+# ==========================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
-    # commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("auth", auth_youtube))
     app.add_handler(CommandHandler("mydrive", mydrive_command))
-    app.add_handler(CommandHandler("upload_to_youtube", upload_to_youtube_command))
-
-    # callback router for inline buttons
-    app.add_handler(CallbackQueryHandler(callback_router))
-
-    # receive pasted oauth code (text messages while flow in user_data)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_oauth_code))
-
-    # handle uploaded files from user -> upload to user's Drive
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, upload_file_message_handler))
-
+    app.add_handler(CallbackQueryHandler(callback_router))
     print("🚀 Bot is running (Webhook mode)...")
-    # if you host on Render or similar and use webhooks, configure WEBHOOK_URL and port.
     if WEBHOOK_URL:
         app.run_webhook(
             listen="0.0.0.0",
@@ -464,12 +380,7 @@ def main():
             webhook_url=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
         )
     else:
-        # fallback: polling (useful for local testing)
         app.run_polling()
 
 if __name__ == "__main__":
     main()
-
-
-
-
