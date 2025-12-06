@@ -73,22 +73,29 @@ def get_youtube_credentials_for_user(user_id: int):
     return creds
 
 async def auth_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     try:
         flow = Flow.from_client_secrets_file(
             "client_secrets_youtube.json",
             scopes=YOUTUBE_SCOPES,
-            redirect_uri=f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}/oauth2callback"
+            redirect_uri="https://telegram-to-drive.onrender.com/oauth2callback"
         )
-        auth_url, _ = flow.authorization_url(prompt="consent")
+
+        auth_url, _ = flow.authorization_url(
+            prompt="consent",
+            access_type="offline",
+            include_granted_scopes="true"
+        )
+
         context.user_data["flow"] = flow
+
         await update.message.reply_text(
-            f"🔗 افتح الرابط التالي على جهازك وسجل الدخول إلى YouTube:\n\n{auth_url}\n\n"
-            "بعد تسجيل الدخول انسخ الكود وأرسله هنا."
+            f"🔗 افتح الرابط التالي وسجّل الدخول:\n\n{auth_url}\n\n"
+            "بعد تسجيل الدخول أرسل الكود هنا."
         )
+
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ OAuth: {e}")
-
+        
 async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "flow" not in context.user_data:
         return
@@ -213,3 +220,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
