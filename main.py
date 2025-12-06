@@ -119,7 +119,7 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flow = Flow.from_client_secrets_file(
             CLIENT_SECRETS,
             scopes=SCOPES,
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+            redirect_uri=f"{WEBHOOK_URL}/oauth2callback"
         )
         auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
         # store flow in user_data (keeps client secrets in memory briefly)
@@ -466,3 +466,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
