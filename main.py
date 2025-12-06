@@ -160,6 +160,21 @@ def sync_user_folder(service, user, main_folder_id):
             copied.append({"id": None, "name": v["name"], "error": str(e)})
     return copied
 
+# أمر لعرض فيديوهات المجلد الرئيسي
+async def list_videos_command(update, context):
+    try:
+        service = get_drive_service()
+    except Exception as e:
+        await update.message.reply_text("❌ خطأ في الوصول إلى Google Drive: " + str(e))
+        return
+    videos = list_drive_videos(service, MAIN_FOLDER_ID)
+    if not videos:
+        await update.message.reply_text("❌ لا يوجد فيديوهات جاهزة في المجلد الرئيسي.")
+        return
+    text = "📽 الفيديوهات المتاحة:\n" + "\n".join([f"{i+1}. {v['name']}" for i, v in enumerate(videos)])
+    await update.message.reply_text(text)
+
+
 # ==========================
 # Telegram Handlers
 # ==========================
@@ -306,3 +321,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
