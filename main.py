@@ -36,7 +36,7 @@ from google_auth_oauthlib.flow import Flow
 # Config / ENV
 # ----------------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # not used for OAuth callback (we use OOB)
+WEBHOOK_URL = "https://telegram-to-drive.onrender.com"
 PORT = int(os.environ.get("PORT", "8443"))
 
 if not TOKEN:
@@ -107,32 +107,33 @@ def credentials_for_user(user_id: int) -> Optional[Credentials]:
             return None
     return creds
 
-async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start OAuth flow for the user. Use OOB redirect so user copies code."""
-    user = update.effective_user
-    if not Path(CLIENT_SECRETS).exists():
-        await update.message.reply_text("⚠️ ملف client_secrets_youtube.json غير موجود في المجلد. أضفه ثم حاول مرة أخرى.")
-        return
+async def auth_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # إنشاء Flow من ملف client_secrets
+        flow = Flow.from_client_secrets_file(
+            CLIENT_SECRETS,
+            scopes=SCOPES,
+            redirect_uri="https://telegram-to-drive.onrender.com/oauth2callback"
+        )
 
-  try:
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS,
-        scopes=SCOPES,
-        redirect_uri=f"{WEBHOOK_URL}/oauth2callback"
-    )
-    auth_url, _ = flow.authorization_url(
-        prompt="consent",
-        access_type="offline",
-        include_granted_scopes="true"
-    )
-    context.user_data["flow"] = flow
-    await update.message.reply_text(
-        "🔐 اضغط الرابط التالي لربط حساب Google الخاص بك (Drive + YouTube):\n\n"
-        f"{auth_url}\n\n"
-        "بعد تسجيل الدخول انسخ الكود الظاهر والصقه هنا في رسالة للبوت."
-    )
-except Exception as e:
-    await update.message.reply_text("❌ فشل بدء عملية الربط: " + str(e))
+        # توليد رابط المصادقة
+        auth_url, _ = flow.authorization_url(
+            prompt="consent",
+            access_type="offline",
+            include_granted_scopes="true"
+        )
+
+        # حفظ الـ Flow مؤقتًا في user_data ليتعرف عليه عند استقبال الكود
+        context.user_data["flow"] = flow
+
+        # إرسال الرابط للمستخدم
+        await update.message.reply_text(
+            f"🔗 افتح الرابط التالي وسجّل الدخول إلى حساب Google الخاص بك:\n\n{auth_url}\n\n"
+            "بعد تسجيل الدخول، انسخ الكود الذي يظهر لك وأرسله هنا."
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ أثناء إنشاء رابط OAuth: {e}")
 
 async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive the pasted OAuth code and exchange for credentials."""
@@ -440,7 +441,7 @@ def main():
 
     # commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("auth", auth_command))
+    app.add_handler(CommandHandler("auth", auth_youtube))
     app.add_handler(CommandHandler("mydrive", mydrive_command))
     app.add_handler(CommandHandler("upload_to_youtube", upload_to_youtube_command))
 
@@ -468,6 +469,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
