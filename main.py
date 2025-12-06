@@ -1,28 +1,29 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import json
 import random
-import tempfile
-import io
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.http import MediaFileUpload
 
 # ==========================
-# إعدادات (عدل المتغيرات البيئية إن لزم)
+# الإعدادات العامة
 # ==========================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # مثال: https://yourdomain.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", "8443"))
 
 if not TOKEN or not WEBHOOK_URL:
@@ -31,35 +32,25 @@ if not TOKEN or not WEBHOOK_URL:
 # مجلدات محلية
 OUTPUTS_DIR = Path("outputs")
 TEMP_DIR = Path("temp")
-YOUTUBE_TOKENS_DIR = Path("youtube_tokens")
-USER_DB = Path("user_folders.json")
 OUTPUTS_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
-YOUTUBE_TOKENS_DIR.mkdir(exist_ok=True)
 
-# المجلد الرئيسي على Google Drive الذي يحتوي فيديوهات القرآن
+# معرّف مجلد الفيديوهات الرئيسي على Google Drive (غيّر إذا لزم)
 MAIN_FOLDER_ID = "1lLKbFPovufWeEkwpCgI3cM-Je-Uee9el"
 
-# ردود وتحسينات الوصف
-RESPONSES = ["السلام عليكم يا {name} 🌸", "أهلًا وسهلًا يا {name} 👋"]
-ABOUT_DESCRIPTION = (
-    "أفضل صانع وناشر للقرآن الكريم — جودة عالية، سهولة، سرعة، أدوات احترافية لنشر محتوى القرآن بكل أمان واحتراف."
-)
-SUPPORT_CHANNEL_URL = "https://www.youtube.com/channel/UCHYJMygtSl60pThu6AUgeOw"
+# قاعدة لتخزين معرفات مجلدات المستخدمين محلياً
+USER_DB = Path("user_folders.json")
 
-# Scopes
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
-YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "openid", "https://www.googleapis.com/auth/userinfo.email"]
+# ردود ترحيب عشوائية
+RESPONSES = ["السلام عليكم يا {name} 🌸", "أهلًا وسهلًا يا {name} 👋"]
 
 # ==========================
-# دوال Google Drive العامة
+# دوال Google Drive
 # ==========================
 def get_drive_service():
     if not os.path.exists("token.json"):
-        raise Exception("⚠️ ملف token.json غير موجود!")
-    creds = Credentials.from_authorized_user_file("token.json", DRIVE_SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        raise Exception("⚠️ ملف token.json غير موجود! اتبع خطوات OAuth للحصول على token.json")
+    creds = Credentials.from_authorized_user_file("token.json", ["https://www.googleapis.com/auth/drive"])
     return build("drive", "v3", credentials=creds)
 
 def load_user_db():
@@ -76,7 +67,11 @@ def get_or_create_user_folder(service, user):
     folder_name = f"{(user.first_name or 'User')}_{user.id}"
     if uid in db:
         return db[uid]
-    folder_metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder", "parents": ["root"]}
+    folder_metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": ["root"]
+    }
     folder = service.files().create(body=folder_metadata, fields="id").execute()
     folder_id = folder["id"]
     db[uid] = folder_id
@@ -86,82 +81,212 @@ def get_or_create_user_folder(service, user):
 def upload_file_to_user_folder(service, user, local_path):
     folder_id = get_or_create_user_folder(service, user)
     file_metadata = {"name": Path(local_path).name, "parents": [folder_id]}
-    media = MediaFileUpload(str(local_path), resumable=True)
+    media = MediaFileUpload(str(local_path))
     uploaded = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
     return uploaded["id"]
 
 def list_drive_videos(service, folder_id):
-    query = f"'{folder_id}' in parents and mimeType contains 'video/' and trashed = false"
-    results = service.files().list(q=query, fields="nextPageToken, files(id, name, appProperties)").execute()
+    query = f"'{folder_id}' in parents and mimeType contains 'video/'"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
     return results.get("files", [])
 
 def list_files_in_folder(service, folder_id):
     query = f"'{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, mimeType, appProperties)").execute()
+    results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
     return results.get("files", [])
 
 # ==========================
-# دوال YouTube
+# الواجهة (مودرن) - أزرار
 # ==========================
-def get_youtube_credentials_for_user(user_id: int):
-    token_path = YOUTUBE_TOKENS_DIR / f"{user_id}_token.json"
-    if not token_path.exists():
-        return None
-    creds = Credentials.from_authorized_user_file(str(token_path), YOUTUBE_SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-    return creds
-
-def download_drive_file_to_temp(service_drive, file_id, filename):
-    suffix = Path(filename).suffix or ".mp4"
-    fd, temp_path = tempfile.mkstemp(prefix="dl_", suffix=suffix, dir=str(TEMP_DIR))
-    os.close(fd)
-    request = service_drive.files().get_media(fileId=file_id)
-    fh = io.FileIO(temp_path, mode="wb")
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    try:
-        while not done:
-            status, done = downloader.next_chunk()
-    finally:
-        fh.close()
-    return temp_path
-
-def upload_single_file_to_youtube(creds, local_path, title, description, privacy="private"):
-    youtube = build("youtube", "v3", credentials=creds)
-    body = {
-        "snippet": {"title": title, "description": description, "tags": ["quran", "قرآن", "recitation"], "categoryId": "22"},
-        "status": {"privacyStatus": privacy}
-    }
-    media = MediaFileUpload(local_path, chunksize=-1, resumable=True)
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-    return response.get("id")
+def main_menu_keyboard():
+    kb = [
+        [InlineKeyboardButton("📂 إدارة الملفات", callback_data="ui:myfiles")],
+        [InlineKeyboardButton("📤 رفع ملف إلى Drive", callback_data="ui:upload")],
+        [InlineKeyboardButton("🎬 نسخ فيديو إلى ملفاتي", callback_data="ui:choosevideo")],
+        [InlineKeyboardButton("ℹ️ حول البوت", callback_data="ui:about"),
+         InlineKeyboardButton("🛠 الدعم الفني", callback_data="ui:support")]
+    ]
+    return InlineKeyboardMarkup(kb)
 
 # ==========================
-# نصف تلقائي
+# أوامر وبداية
 # ==========================
-def sync_user_folder(service, user, main_folder_id):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    name = user.first_name or "ضيف"
+    welcome_text = (
+        f"🎉 مرحبًا بك يا <b>{name}</b>!\n\n"
+        "🚀 <b>CloudDrive Bot</b>\n"
+        "نظام إدارة ملفات احترافي على Google Drive — سريع وآمن.\n\n"
+        "👇 استخدم الأزرار التالية للبدء:"
+    )
+    await update.message.reply_html(welcome_text, reply_markup=main_menu_keyboard())
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/start - العودة للقائمة\n"
+        "/myfolder - إنشاء/عرض مجلدك\n"
+        "/listvideos - عرض فيديوهات المجلد الرئيسي\n"
+        "/choosevideo - بدء نسخ فيديو"
+    )
+
+# تبسيط ردود التحية للنصوص العادية
+async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(random.choice(RESPONSES).format(name=user.first_name or "ضيف"))
+
+# ==========================
+# معالجة CallbackQuery العامة (الواجهة المودرن)
+# ==========================
+async def ui_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+
+    # ----- ملفاتي -----
+    if data == "ui:myfiles":
+        service = get_drive_service()
+        user = q.from_user
+        folder_id = get_or_create_user_folder(service, user)
+        # رابط فتح المجلد على Drive
+        drive_link = f"https://drive.google.com/drive/folders/{folder_id}"
+        files = list_files_in_folder(service, folder_id)
+        text = f"📁 <b>مجلدك الشخصي</b>\nID: <code>{folder_id}</code>\n\n"
+        text += f"🔗 <a href='{drive_link}'>فتح المجلد في Drive</a>\n\n"
+        if not files:
+            text += "📭 لا توجد ملفات حالياً في مجلدك."
+        else:
+            text += "📄 ملفاتك:\n" + "\n".join([f"- {f['name']}" for f in files])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 رفع ملف", callback_data="ui:upload")],
+            [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="ui:back")]
+        ])
+        await q.edit_message_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=False)
+
+    # ----- رفع ملف (يطلب من المستخدم إرسال ملف) -----
+    elif data == "ui:upload":
+        # نعلم المستخدم أن يرسل الملف الآن
+        context.user_data["awaiting_upload"] = True
+        await q.edit_message_text("📤 قم الآن بإرسال الملف (مستند - صورة - فيديو). سأقوم برفعه إلى مجلدك في Google Drive.\n\n🔙 لإلغاء اضغط /start")
+
+    # ----- اختيار فيديو للنسخ -----
+    elif data == "ui:choosevideo":
+        service = get_drive_service()
+        videos = list_drive_videos(service, MAIN_FOLDER_ID)
+        if not videos:
+            await q.edit_message_text("❌ لا توجد فيديوهات جاهزة في المجلد الرئيسي.")
+            return
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(v["name"], callback_data=f"copy:{v['id']}")] for v in videos])
+        await q.edit_message_text("🎬 اختر الفيديو لنسخه إلى مجلدك:", reply_markup=kb)
+
+    # ----- حول البوت -----
+    elif data == "ui:about":
+        about_text = (
+            "ℹ️ <b>حول CloudDrive Bot</b>\n\n"
+            "CloudDrive Bot هو بوت لإدارة الملفات على Google Drive.\n"
+            "• إنشاء مجلد خاص لكل مستخدم\n"
+            "• رفع الملفات مباشرة من Telegram\n"
+            "• نسخ فيديوهات جاهزة إلى مجلدك\n\n"
+            "✨ سرعة – بساطة – أمان"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="ui:back")]])
+        await q.edit_message_text(about_text, reply_markup=kb, parse_mode="HTML")
+
+    # ----- الدعم -----
+    elif data == "ui:support":
+        support_text = (
+            "🛠 <b>الدعم والمساعدة</b>\n\n"
+            "للدعم تواصل عبر:\n"
+            "📧 lesquatrefreresazri@gmail.com\n"
+            "▶️ قناة: Qurani Studio"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="ui:back")]])
+        await q.edit_message_text(support_text, reply_markup=kb, parse_mode="HTML")
+
+    # ----- رجوع للقائمة -----
+    elif data == "ui:back":
+        await q.edit_message_text("🏠 <b>القائمة الرئيسية</b>\nاختر ما تريد:", reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+    # ----- نسخ الفيديو إلى مجلد المستخدم (callback data "copy:<id>") handled below by separate handler -----
+    else:
+        # لا تفعل شيئًا هنا إن كان غير معروف (قد يتم معالجته في handler آخر)
+        await q.answer()
+
+# ==========================
+# معالجة نسخ الفيديو (callback data startswith copy:)
+# ==========================
+async def copy_video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    if not data.startswith("copy:"):
+        return
+    video_id = data.split(":", 1)[1]
+    service = get_drive_service()
+    user = q.from_user
     user_folder_id = get_or_create_user_folder(service, user)
-    main_videos = list_drive_videos(service, main_folder_id)
-    user_videos = list_drive_videos(service, user_folder_id)
-    user_names = {f["name"] for f in user_videos}
-    to_copy = [v for v in main_videos if v["name"] not in user_names]
-    copied = []
-    for v in to_copy:
-        try:
-            copy_body = {"parents": [user_folder_id], "name": v["name"]}
-            new_file = service.files().copy(fileId=v["id"], body=copy_body, fields="id, name").execute()
-            copied.append({"id": new_file["id"], "name": new_file["name"]})
-        except Exception as e:
-            copied.append({"id": None, "name": v["name"], "error": str(e)})
-    return copied
+    service.files().copy(fileId=video_id, body={"parents": [user_folder_id]}).execute()
+    await q.edit_message_text("✔ تم نسخ الفيديو إلى مجلدك بنجاح!")
 
-# أمر لعرض فيديوهات المجلد الرئيسي
-async def list_videos_command(update, context):
+# ==========================
+# رفع الملفات عبر الرسائل (Document / Photo / Video)
+# ==========================
+async def upload_file_by_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    service = None
+    try:
+        service = get_drive_service()
+    except Exception as e:
+        await update.message.reply_text("❌ خطأ في الوصول إلى Google Drive: " + str(e))
+        return
+
+    # يدعم المستندات والملفات المرسلة كـ document، وأيضًا الفيديو/صورة كـ document أو كـ photo
+    file_name = None
+    local_path = None
+
+    # إذا أرسل المستعمل مستند
+    if update.message.document:
+        doc = update.message.document
+        file_name = doc.file_name or f"file_{user.id}"
+        local_path = TEMP_DIR / file_name
+        await doc.get_file().download_to_drive(str(local_path))
+
+    # إذا أرسل صورة (نأخذ النسخة الأخيرة الأكبر)
+    elif update.message.photo:
+        photo = update.message.photo[-1]
+        file_name = f"photo_{user.id}.jpg"
+        local_path = TEMP_DIR / file_name
+        await photo.get_file().download_to_drive(str(local_path))
+
+    # إذا أرسل فيديو كـ video
+    elif update.message.video:
+        vid = update.message.video
+        file_name = vid.file_name or f"video_{user.id}.mp4"
+        local_path = TEMP_DIR / file_name
+        await vid.get_file().download_to_drive(str(local_path))
+    else:
+        await update.message.reply_text("❌ لم أجد ملفًا مرفوعًا. أرسل ملفًا (مستند/صورة/فيديو).")
+        return
+
+    # تنفيذ الرفع إلى مجلد المستخدم
+    try:
+        file_id = upload_file_to_user_folder(service, user, local_path)
+        # إزالة الملف المحلي
+        try:
+            local_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        await update.message.reply_text(f"✔ تم رفع الملف إلى مجلدك!\nاسم الملف: {file_name}\nDrive ID: <code>{file_id}</code>", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text("❌ فشل رفع الملف إلى Drive: " + str(e))
+
+    # إزالة حالة الانتظار إن كانت موجودة
+    context.user_data.pop("awaiting_upload", None)
+
+# ==========================
+# قائمة الفيديوهات العامة (أمر نصي بديل)
+# ==========================
+async def list_videos_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         service = get_drive_service()
     except Exception as e:
@@ -174,197 +299,27 @@ async def list_videos_command(update, context):
     text = "📽 الفيديوهات المتاحة:\n" + "\n".join([f"{i+1}. {v['name']}" for i, v in enumerate(videos)])
     await update.message.reply_text(text)
 
-# زر رفع فيديو محدد إلى يوتيوب (نصف تلقائي)
-async def upload_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data or ""
-    if not data.startswith("upload:"):
-        return
-    file_id = data.split(":", 1)[1]
-    service = get_drive_service()
-    user = query.from_user
-
-    # تأكد أن لدى المستخدم توكن لليوتيوب
-    creds = get_youtube_credentials_for_user(user.id)
-    if not creds:
-        await query.edit_message_text("⚠️ لم تقم بربط حساب YouTube بعد. شغّل /auth_youtube ثم حاول مجددًا.")
-        return
-
-    # جلب معلومات الملف من Drive
-    try:
-        fmeta = service.files().get(fileId=file_id, fields="id,name,mimeType,appProperties").execute()
-    except Exception as e:
-        await query.edit_message_text("❌ خطأ في الحصول على معلومات الملف من Drive: " + str(e))
-        return
-
-    if not fmeta.get("mimeType", "").startswith("video/"):
-        await query.edit_message_text("⚠️ هذا الملف ليس فيديو.")
-        return
-
-    await query.edit_message_text(f"⬇️ جارٍ تنزيل {fmeta['name']} ثم رفعه إلى قناتك على YouTube...")
-
-    # تنزيل مؤقت
-    try:
-        temp_path = download_drive_file_to_temp(service, file_id, fmeta["name"])
-    except Exception as e:
-        await query.edit_message_text("❌ فشل تنزيل الملف من Drive: " + str(e))
-        return
-
-    # وصف الفيديو الافتراضي
-    description = "أفضل صانع وناشر للقرآن الكريم — جودة عالية، سهولة، سرعة. Qurani Studio."
-
-    # رفع الفيديو
-    try:
-        yt_id = upload_single_file_to_youtube(creds, temp_path, title=fmeta["name"], description=description, privacy="private")
-        # تعليم ملف Drive أنه مرفوع (appProperties)
-        service.files().update(fileId=file_id, body={"appProperties": {"uploaded_to_youtube": "true"}}).execute()
-        await query.edit_message_text(f"✅ تم رفع الفيديو بنجاح إلى قناتك! (YouTube ID: {yt_id})\nرابط: https://youtu.be/{yt_id}")
-    except Exception as e:
-        await query.edit_message_text("❌ فشل الرفع إلى يوتيوب: " + str(e))
-    finally:
-        try:
-            os.remove(temp_path)
-        except Exception:
-            pass
-
-
 # ==========================
-# Telegram Handlers
-# ==========================
-def main_menu_keyboard():
-    kb = [
-        [InlineKeyboardButton("📂 إدارة الملفات", callback_data="ui:myfiles")],
-        [InlineKeyboardButton("📤 رفع ملف إلى Drive", callback_data="ui:upload")],
-        [InlineKeyboardButton("🎬 نسخ فيديو إلى ملفاتي", callback_data="ui:choosevideo")],
-        [InlineKeyboardButton("🔄 تحديث مجلدي", callback_data="ui:sync")],
-        [InlineKeyboardButton("ℹ️ حول البوت", callback_data="ui:about"),
-         InlineKeyboardButton("🛠 الدعم الفني", callback_data="ui:support")]
-    ]
-    return InlineKeyboardMarkup(kb)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    name = user.first_name or "ضيف"
-    welcome_text = (
-        f"🎉 مرحبًا بك يا <b>{name}</b>!\n\n"
-        f"🚀 <b>CloudDrive Bot</b>\n{ABOUT_DESCRIPTION}\n\n"
-        "👇 استخدم الأزرار التالية للبدء:"
-    )
-    await update.message.reply_html(welcome_text, reply_markup=main_menu_keyboard())
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/start - العودة للقائمة\n"
-        "/listvideos - عرض فيديوهات المجلد الرئيسي\n"
-        "/sync - نسخ الفيديوهات الجديدة إلى مجلدك\n"
-        "/auth_youtube - ربط حساب YouTube\n"
-        "/upload_to_youtube - رفع فيديو إلى قناتك"
-    )
-
-async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(random.choice(RESPONSES).format(name=user.first_name or "ضيف"))
-
-# ==========================
-# OAuth YouTube
-# ==========================
-async def auth_youtube(update, context):
-    try:
-        flow = InstalledAppFlow.from_client_secrets_file(
-            "client_secrets_youtube.json",
-            scopes=YOUTUBE_SCOPES
-        )
-        auth_url, _ = flow.authorization_url(prompt="consent")
-        await update.message.reply_text(
-            "🔗 افتح الرابط التالي لتسجيل الدخول إلى YouTube:\n\n" + auth_url +
-            "\n\nبعد تسجيل الدخول سيظهر لك الكود، أرسله هنا."
-        )
-        context.user_data["awaiting_youtube_code"] = flow
-    except Exception as e:
-        await update.message.reply_text("❌ خطأ OAuth: " + str(e))
-
-async def receive_oauth_code(update, context):
-    if "awaiting_youtube_code" not in context.user_data:
-        return
-    flow = context.user_data["awaiting_youtube_code"]
-    code = update.message.text.strip()
-    try:
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        context.user_data["youtube_credentials"] = {
-            "token": creds.token,
-            "refresh_token": creds.refresh_token,
-            "token_uri": creds.token_uri,
-            "client_id": creds.client_id,
-            "client_secret": creds.client_secret,
-            "scopes": creds.scopes
-        }
-        # حفظ كملف
-        token_path = YOUTUBE_TOKENS_DIR / f"{update.effective_user.id}_token.json"
-        token_path.write_text(json.dumps(context.user_data["youtube_credentials"]), encoding="utf-8")
-        del context.user_data["awaiting_youtube_code"]
-        await update.message.reply_text("✅ تم ربط حساب YouTube بنجاح!")
-    except Exception as e:
-        await update.message.reply_text("❌ رمز OAuth غير صحيح:\n" + str(e))
-
-# ==========================
-# رفع فيديو محدد
-# ==========================
-async def upload_to_youtube(update, context):
-    user = update.effective_user
-    if "youtube_credentials" not in context.user_data:
-        await update.message.reply_text("❌ لم تربط حساب YouTube بعد. استخدم /auth_youtube أولاً.")
-        return
-    creds_data = context.user_data["youtube_credentials"]
-    creds = Credentials(**creds_data)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-
-    service = get_drive_service()
-    user_folder_id = get_or_create_user_folder(service, user)
-    files = list_drive_videos(service, user_folder_id)
-
-    if not files:
-        await update.message.reply_text("❌ لا توجد فيديوهات في مجلدك.")
-        return
-
-    # رفع حتى 5 فيديوهات
-    videos_uploaded = 0
-    for f in files:
-        if f.get("appProperties", {}).get("uploaded_to_youtube") == "true":
-            continue
-        if videos_uploaded >= 5:
-            break
-        temp_path = download_drive_file_to_temp(service, f["id"], f["name"])
-        description = (
-            "أفضل صانع وناشر للقرآن الكريم — جودة عالية، سهولة، سرعة. Qurani Studio.\n"
-            f"🔗 دعم فني: {SUPPORT_CHANNEL_URL}"
-        )
-        yt_id = upload_single_file_to_youtube(creds, temp_path, title=f["name"], description=description)
-        service.files().update(fileId=f["id"], body={"appProperties": {"uploaded_to_youtube": "true"}}).execute()
-        os.remove(temp_path)
-        videos_uploaded += 1
-
-    await update.message.reply_text(f"✅ تم رفع {videos_uploaded} فيديو بنجاح إلى قناتك!")
-
-# ==========================
-# Main
+# تشغيل التطبيق (Webhook)
 # ==========================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Commands
+    # handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("listvideos", list_videos_command))
-    app.add_handler(CommandHandler("auth_youtube", auth_youtube))
-    app.add_handler(CommandHandler("upload_to_youtube", upload_to_youtube))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_oauth_code))
-    
-    # Callback handlers
-    app.add_handler(CallbackQueryHandler(upload_callback_handler, pattern="^upload:"))
-    
+
+    # callback handlers (UI)
+    app.add_handler(CallbackQueryHandler(ui_callback_handler, pattern="^ui:"))
+    app.add_handler(CallbackQueryHandler(copy_video_handler, pattern="^copy:"))
+
+    # رسالة (رفع ملف) - أي وثيقة / صورة / فيديو يتم رفعه تلقائياً
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, upload_file_by_message))
+
+    # رسالة نصية عادية (تحية)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, greet))
+
     print("🚀 Bot is running with Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
@@ -375,5 +330,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
