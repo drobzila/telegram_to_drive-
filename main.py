@@ -501,7 +501,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("listvideos", list_videos_command))
-    app.add_handler(CommandHandler("auth_youtube", auth_youtube_command))
+    app.add_handler(CommandHandler("auth_youtube", auth_youtube))
     app.add_handler(CommandHandler("upload_to_youtube", upload_to_youtube_command))
 
     app.add_handler(CallbackQueryHandler(ui_callback_handler, pattern="^ui:"))
@@ -523,4 +523,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
