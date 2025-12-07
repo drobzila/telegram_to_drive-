@@ -33,14 +33,23 @@ from google_auth_oauthlib.flow import Flow, InstalledAppFlow
 # Config / ENV
 # ==========================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-to-drive.onrender.com")
+
+WEBHOOK_URL = os.environ.get(
+    "WEBHOOK_URL",
+    "https://telegram-to-drive.onrender.com"
+)
+
 PORT = int(os.environ.get("PORT", "8443"))
-MAIN_FOLDER_ID = os.environ.get("MAIN_FOLDER_ID", "root")  # Google Drive folder ID for Quran videos
+
+# المجلد الرئيسي للفيديوهات في Google Drive
+MAIN_FOLDER_ID = "1lLKbFPovufWeEkwpCgI3cM-Je-Uee9el"
+
 CLIENT_SECRETS = "client_secrets_youtube.json"
 
 if not TOKEN:
     raise Exception("⚠️ TELEGRAM_TOKEN غير مضبوط في Environment Variables")
 
+# Local directories
 # Local directories
 DATA_DIR = Path(".")
 TEMP_DIR = DATA_DIR / "temp"
