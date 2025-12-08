@@ -254,9 +254,27 @@ async def receive_oauth_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
     code = update.message.text.strip()
     try:
         flow.fetch_token(code=code)
-        creds = flow.credentials
-        token_path_for_user(user.id).write_text(creds.to_json(), encoding="utf-8")
+        raw_creds = flow.credentials
+        # إعادة تنسيق التوكن بشكل قياسي يناسب from_authorized_user_file
+        creds = Credentials.from_authorized_user_info(
+            json.loads(raw_creds.to_json()),
+            SCOPES
+        )
+        # حفظه نهائيًا
+        with open(token_path_for_user(user.id), "w", encoding="utf-8") as f:
+            f.write(creds.to_json())  # <-- هنا المسافة البادئة صحيحة
         context.user_data.pop("flow", None)
+        # إنشاء مجلد المستخدم على Drive
+        try:
+            service = build("drive", "v3", credentials=creds)
+            ensure_user_folder(creds, user)
+        except Exception:
+            pass
+        await update.message.reply_text("✅ تم ربط حساب Google بنجاح.")
+    except Exception as e:
+        await update.message.reply_text("❌ رمز OAuth غير صالح أو فشل التبادل: " + str(e))
+        context.user_data.pop("flow", None)
+        
         # create user folder
         try:
             service = build("drive", "v3", credentials=creds)
