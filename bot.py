@@ -102,18 +102,24 @@ def download_drive_file(drive, file_id, name):
 def upload_to_youtube(youtube, path, title):
     media = MediaFileUpload(path, resumable=True)
     body = {
-        "snippet": {"title": title, "categoryId": "22"},
+        "snippet": {
+            "title": title,
+            "description": "Uploaded via Telegram Bot",
+            "categoryId": "22"
+        },
         "status": {"privacyStatus": "private"}
     }
+
     req = youtube.videos().insert(
         part="snippet,status",
         body=body,
         media_body=media
     )
-    res = None
-    while res is None:
-        _, res = req.next_chunk()
-    return res["id"]
+
+    response = None
+    while response is None:
+        status, response = req.next_chunk()
+    return response["id"]
 
 # ==========================
 # Commands
@@ -151,7 +157,9 @@ async def upload3(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     res = drive.files().list(
         q=f"'{MAIN_FOLDER_ID}' in parents and mimeType contains 'video' and trashed=false",
-        fields="files(id,name)"
+        fields="files(id,name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
 
     files = res.get("files", [])[:3]
