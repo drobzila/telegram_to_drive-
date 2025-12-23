@@ -9,9 +9,7 @@ from pathlib import Path
 
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
@@ -22,7 +20,7 @@ from google_auth_oauthlib.flow import Flow
 # Config
 # ==========================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://your-app.onrender.com
 PORT = int(os.environ.get("PORT", 10000))
 
 MAIN_FOLDER_ID = "PUT_MAIN_DRIVE_FOLDER_ID_HERE"
@@ -45,6 +43,7 @@ if not TOKEN or not WEBHOOK_URL:
 # Flask (OAuth callback)
 # ==========================
 flask_app = Flask(__name__)
+FLASK_PORT = PORT + 1  # منفذ مختلف عن Webhook
 
 def get_creds_path(user_id):
     return CREDS_DIR / f"{user_id}.json"
@@ -70,7 +69,7 @@ def oauth_callback():
     return "✅ تم ربط قناتك بنجاح، يمكنك العودة إلى Telegram."
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=PORT)
+    flask_app.run(host="0.0.0.0", port=FLASK_PORT)
 
 # ==========================
 # Helpers
@@ -102,20 +101,10 @@ def download_drive_file(drive, file_id, name):
 def upload_to_youtube(youtube, path, title):
     media = MediaFileUpload(path, resumable=True)
     body = {
-        "snippet": {
-            "title": title,
-            "description": "Uploaded via Telegram Bot",
-            "categoryId": "22"
-        },
-        "status": {"privacyStatus": "private"}
+        "snippet": {"title": title, "description": "Uploaded via Telegram Bot", "categoryId": "22"},
+        "status": {"privacyStatus": "public"}  # يمكن تغييره إلى "public" أو "unlisted"
     }
-
-    req = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media
-    )
-
+    req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
     while response is None:
         status, response = req.next_chunk()
@@ -130,8 +119,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_creds_path(user_id).exists():
         url = generate_oauth_url(user_id)
         await update.message.reply_text(
-            "🔐 لربط قناتك ورفع الفيديوهات إلى قناتك الخاصة، "
-            "اضغط على الرابط التالي:\n\n"
+            "🔐 لربط قناتك ورفع الفيديوهات إلى قناتك الخاصة، اضغط على الرابط التالي:\n\n"
             f"{url}"
         )
         return
@@ -189,8 +177,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main
 # ==========================
 def main():
+    # شغّل Flask على منفذ مختلف
     threading.Thread(target=run_flask, daemon=True).start()
 
+    # شغّل Telegram Bot Webhook على PORT الذي يوفره Render
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("upload3", upload3))
