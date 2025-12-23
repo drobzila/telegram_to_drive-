@@ -4,17 +4,17 @@
 import os
 import json
 import tempfile
-import threading
 from pathlib import Path
 
-from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, Dispatcher, BaseFilter
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+
+from aiohttp import web
 
 # ==========================
 # Config
@@ -40,40 +40,11 @@ if not TOKEN or not WEBHOOK_URL:
     raise Exception("❌ TELEGRAM_TOKEN أو WEBHOOK_URL غير مضبوط")
 
 # ==========================
-# Flask (OAuth callback)
+# Helpers
 # ==========================
-flask_app = Flask(__name__)
-FLASK_PORT = PORT + 1  # منفذ مختلف عن Webhook
-
 def get_creds_path(user_id):
     return CREDS_DIR / f"{user_id}.json"
 
-@flask_app.route("/oauth/callback")
-def oauth_callback():
-    user_id = request.args.get("state")
-    code = request.args.get("code")
-
-    if not user_id or not code:
-        return "❌ OAuth failed"
-
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRET,
-        scopes=SCOPES,
-        redirect_uri=f"{WEBHOOK_URL}/oauth/callback"
-    )
-    flow.fetch_token(code=code)
-
-    with open(get_creds_path(user_id), "w") as f:
-        f.write(flow.credentials.to_json())
-
-    return "✅ تم ربط قناتك بنجاح، يمكنك العودة إلى Telegram."
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=FLASK_PORT)
-
-# ==========================
-# Helpers
-# ==========================
 def generate_oauth_url(user_id):
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRET,
@@ -102,7 +73,7 @@ def upload_to_youtube(youtube, path, title):
     media = MediaFileUpload(path, resumable=True)
     body = {
         "snippet": {"title": title, "description": "Uploaded via Telegram Bot", "categoryId": "22"},
-        "status": {"privacyStatus": "public"}  # يمكن تغييره إلى "public" أو "unlisted"
+        "status": {"privacyStatus": "private"}  # يمكن تغييره إلى public أو unlisted
     }
     req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
@@ -115,7 +86,6 @@ def upload_to_youtube(youtube, path, title):
 # ==========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if not get_creds_path(user_id).exists():
         url = generate_oauth_url(user_id)
         await update.message.reply_text(
@@ -123,7 +93,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{url}"
         )
         return
-
     kb = [[InlineKeyboardButton("⬆️ رفع 3 فيديوهات", callback_data="upload3")]]
     await update.message.reply_text(
         "✅ تم ربط قناتك بنجاح",
@@ -134,27 +103,22 @@ async def upload3(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     creds_path = get_creds_path(user_id)
-
     if not creds_path.exists():
         await context.bot.send_message(chat_id, "❌ لم تقم بربط قناتك بعد.")
         return
-
     creds = Credentials.from_authorized_user_file(creds_path, SCOPES)
     drive = build("drive", "v3", credentials=creds)
     youtube = build("youtube", "v3", credentials=creds)
-
     res = drive.files().list(
         q=f"'{MAIN_FOLDER_ID}' in parents and mimeType contains 'video' and trashed=false",
         fields="files(id,name)",
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
     ).execute()
-
     files = res.get("files", [])[:3]
     if not files:
         await context.bot.send_message(chat_id, "❌ لا توجد فيديوهات.")
         return
-
     for f in files:
         tmp = None
         try:
@@ -174,18 +138,48 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await upload3(update, context)
 
 # ==========================
+# OAuth callback (aiohttp handler)
+# ==========================
+async def oauth_callback(request):
+    params = request.rel_url.query
+    user_id = params.get("state")
+    code = params.get("code")
+    if not user_id or not code:
+        return web.Response(text="❌ OAuth failed", status=400)
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRET,
+        scopes=SCOPES,
+        redirect_uri=f"{WEBHOOK_URL}/oauth/callback"
+    )
+    flow.fetch_token(code=code)
+    with open(get_creds_path(user_id), "w") as f:
+        f.write(flow.credentials.to_json())
+    return web.Response(text="✅ تم ربط قناتك بنجاح، يمكنك العودة إلى Telegram.")
+
+# ==========================
 # Main
 # ==========================
 def main():
-    # شغّل Flask على منفذ مختلف
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    # شغّل Telegram Bot Webhook على PORT الذي يوفره Render
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("upload3", upload3))
     app.add_handler(CallbackQueryHandler(callback_router))
 
+    # إعداد aiohttp server للبوت + OAuth على نفس المنفذ
+    from telegram.ext._webhookhandler import WebhookHandler
+    from aiohttp import web
+
+    # أدمج handler OAuth
+    async def handle(request):
+        if request.path == f"/oauth/callback":
+            return await oauth_callback(request)
+        return web.Response(text="Bot Running")
+
+    aio_app = web.Application()
+    aio_app.router.add_get('/oauth/callback', oauth_callback)
+    aio_app.router.add_get('/', lambda request: web.Response(text="Bot Running"))
+
+    # شغّل البوت Webhook على PORT Render
     print("🚀 Bot running on Render")
     app.run_webhook(
         listen="0.0.0.0",
