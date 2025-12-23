@@ -73,7 +73,7 @@ def upload_to_youtube(youtube, path, title):
     media = MediaFileUpload(path, resumable=True)
     body = {
         "snippet": {"title": title, "description": "Uploaded via Telegram Bot", "categoryId": "22"},
-        "status": {"privacyStatus": "private"}  # يمكن تغييره إلى public أو unlisted
+        "status": {"privacyStatus": "public"}  # يمكن تغييره إلى public أو unlisted
     }
     req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
