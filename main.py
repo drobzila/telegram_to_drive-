@@ -5,6 +5,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
+import asyncio
 
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -72,16 +73,16 @@ def upload_to_youtube(youtube, path, title):
     media = MediaFileUpload(path, resumable=True)
     body = {
         "snippet": {"title": title, "description": "Uploaded via Telegram Bot", "categoryId": "22"},
-        "status": {"privacyStatus": "public"}  # يمكن تغييره إلى public أو unlisted
+        "status": {"privacyStatus": "public"}
     }
     req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
     while response is None:
-        status, response = req.next_chunk()
+        _, response = req.next_chunk()
     return response["id"]
 
 # ==========================
-# Commands
+# Telegram Commands
 # ==========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -156,28 +157,38 @@ async def oauth_callback(request):
     return web.Response(text="✅ تم ربط قناتك بنجاح، يمكنك العودة إلى Telegram.")
 
 # ==========================
+# aiohttp server لتلقي OAuth
+# ==========================
+async def start_aiohttp():
+    app = web.Application()
+    app.router.add_get("/oauth/callback", oauth_callback)
+    app.router.add_get("/", lambda request: web.Response(text="Bot Running"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 aiohttp server running on port {PORT}")
+
+# ==========================
 # Main
 # ==========================
 def main():
-    # إعداد aiohttp server
-    aio_app = web.Application()
-    aio_app.router.add_get('/oauth/callback', oauth_callback)
-    aio_app.router.add_get('/', lambda request: web.Response(text="Bot Running"))
-
-    # إعداد Telegram Bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("upload3", upload3))
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    print("🚀 Bot running on Render")
-    # Webhook + OAuth على نفس المنفذ
+    # تشغيل aiohttp server كـ background task
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_aiohttp())
+
+    # شغل Webhook على نفس المنفذ
+    print("🚀 Telegram Bot running on Render")
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-        webhook_app=aio_app
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
     )
 
 if __name__ == "__main__":
