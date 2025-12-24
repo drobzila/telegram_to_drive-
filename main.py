@@ -6,6 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -13,8 +14,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-
-from aiohttp import web
 
 # ==========================
 # Config
@@ -138,7 +137,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await upload3(update, context)
 
 # ==========================
-# OAuth callback (aiohttp handler)
+# OAuth callback aiohttp
 # ==========================
 async def oauth_callback(request):
     params = request.rel_url.query
@@ -160,31 +159,25 @@ async def oauth_callback(request):
 # Main
 # ==========================
 def main():
+    # إعداد aiohttp server
+    aio_app = web.Application()
+    aio_app.router.add_get('/oauth/callback', oauth_callback)
+    aio_app.router.add_get('/', lambda request: web.Response(text="Bot Running"))
+
+    # إعداد Telegram Bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("upload3", upload3))
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    # إعداد aiohttp server للبوت + OAuth على نفس المنفذ
-    from aiohttp import web
-
-    # أدمج handler OAuth
-    async def handle(request):
-        if request.path == f"/oauth/callback":
-            return await oauth_callback(request)
-        return web.Response(text="Bot Running")
-
-    aio_app = web.Application()
-    aio_app.router.add_get('/oauth/callback', oauth_callback)
-    aio_app.router.add_get('/', lambda request: web.Response(text="Bot Running"))
-
-    # شغّل البوت Webhook على PORT Render
     print("🚀 Bot running on Render")
+    # Webhook + OAuth على نفس المنفذ
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+        webhook_app=aio_app
     )
 
 if __name__ == "__main__":
