@@ -166,7 +166,6 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_router))
 
     # إعداد aiohttp server للبوت + OAuth على نفس المنفذ
-    from telegram.ext._webhookhandler import WebhookHandler
     from aiohttp import web
 
     # أدمج handler OAuth
